@@ -1,0 +1,111 @@
+name: Sync upstream (pbs05/ponwrt)
+
+# 每 3 天拉一次上游，有新提交就合并 + 推送，并自动触发一次定制构建。
+# 定制内容都在 custom/ 目录与自有的 workflow 文件里，上游更新不会覆盖它们。
+
+on:
+  schedule:
+    - cron: '0 19 */3 * *'
+  workflow_dispatch:
+    inputs:
+      trigger_build:
+        description: '同步到新提交后自动触发定制构建'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: xg2010g-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync and build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          # 自定义 workflow 万一和上游同名冲突，保留本仓库版本
+          git config merge.keep-ours.driver true
+          printf '%s\n' \
+            '.github/workflows/xg2010g-build.yml merge=keep-ours' \
+            '.github/workflows/sync-upstream.yml merge=keep-ours' \
+            'custom/** merge=keep-ours' \
+            > .git/info/attributes
+
+      - name: Add upstream remote
+        run: |
+          git remote add parent https://github.com/pbs05/ponwrt.git 2>/dev/null || true
+          git remote set-url parent https://github.com/pbs05/ponwrt.git
+
+      - name: Fetch upstream
+        run: git fetch --no-tags parent +refs/heads/master:refs/remotes/parent/master
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          changed=false
+          if git merge-base --is-ancestor parent/master HEAD; then
+            echo "== 上游没有新提交，跳过合并"
+          else
+            echo "== 上游领先 $(git rev-list --count HEAD..parent/master) 个提交，开始合并"
+            if git merge --no-edit parent/master; then
+              changed=true
+            else
+              echo "::error::与上游合并冲突，需要人工处理。冲突文件："
+              git diff --name-only --diff-filter=U
+              git merge --abort || true
+              exit 1
+            fi
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Check upstream workflow drift
+        if: always()
+        run: |
+          recorded="$(tr -d '[:space:]' < custom/upstream/release.yml.sha 2>/dev/null || true)"
+          current="$(git rev-parse parent/master:.github/workflows/release.yml 2>/dev/null || true)"
+          echo "上游 release.yml blob=$current（本仓库记录基线=$recorded）"
+          if [ -n "$recorded" ] && [ -n "$current" ] && [ "$recorded" != "$current" ]; then
+            echo "::warning::pbs05 改过 .github/workflows/release.yml，本仓库用的是自有的 xg2010g-build.yml，建议人工核对上游新改动"
+          fi
+
+      - name: Push to origin
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin HEAD:master
+
+      - name: Trigger custom build
+        if: ${{ steps.merge.outputs.changed == 'true' && (github.event_name == 'schedule' || inputs.trigger_build != 'false') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="auto-$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)"
+          if gh workflow run xg2010g-build.yml --repo "$GITHUB_REPOSITORY" --ref master \
+               -f tag="$tag" -f prerelease=true; then
+            echo "已触发定制构建，tag=$tag"
+          else
+            echo "::warning::自动触发构建失败，请手动运行 Build XG2010G Firmware"
+          fi
+
+      - name: Show result
+        if: always()
+        run: |
+          echo "== 同步结果：changed=${{ steps.merge.outputs.changed }} =="
+          git log --oneline -5 || true
+          git status --short || true

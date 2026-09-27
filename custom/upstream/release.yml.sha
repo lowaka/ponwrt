@@ -1,0 +1,4 @@
+# 最近一次同步 hook 时，pbs05/ponwrt 的 .github/workflows/release.yml blob sha。
+# sync-upstream.yml 每次同步都会比对它：上游这个文件变了就打 ::warning::，
+# 提醒人工核对上游的新改动（本仓库用的是自有的 .github/workflows/xg2010g-build.yml）。
+1942a907046e3f5c1ca87f498ad0d977e434052d

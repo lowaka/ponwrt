@@ -1,0 +1,184 @@
+name: Build XG2010G Firmware
+
+# 上游的 .github/workflows/release.yml 保持原样；这份是带 custom/ 定制层的构建 + 发布。
+# 定制内容全部放在 custom/ 目录里，同步 pbs05/ponwrt 上游时不会被覆盖。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag（留空 = 自动生成 xg2010g-<日期>-<提交>）'
+        required: false
+        type: string
+      prerelease:
+        description: '标记为预发布（Pre-release）'
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches:
+      - master
+    paths:
+      - 'custom/**'
+      - '.github/workflows/xg2010g-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xg2010g-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build an7581 (XG2010G)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Free build space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
+            gettext git g++-multilib gcc-multilib gperf help2man intltool \
+            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool libyaml-dev lld llvm ninja-build p7zip-full patch pkgconf \
+            python3 python3-docutils python3-pip python3-ply python3-pyelftools \
+            qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
+
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: ponwrt-xg2010g-dl-${{ hashFiles('feeds.conf.default', 'configs/*.config', 'custom/config.fragment') }}
+          restore-keys: |
+            ponwrt-dl-an7581-
+            ponwrt-dl-
+
+      - name: Install feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Apply custom layer (files overlay)
+        run: |
+          mkdir -p files
+          cp -a custom/files/. files/
+          echo "== files/ 覆盖层内容 =="
+          find files -type f | sort
+
+      - name: Bundle OpenClash core (mihomo)
+        run: bash custom/scripts/fetch-openclash-core.sh
+
+      - name: Configure an7581
+        run: |
+          ./scripts/kconfig.pl + + \
+            configs/an7581.config \
+            configs/release.config \
+            custom/config.fragment > .config
+          make defconfig
+          echo "== 三插件在 .config 里的状态 =="
+          grep -E 'CONFIG_PACKAGE_(luci-app-openclash|luci-app-msd_lite|luci-app-ddns-go|ddns-go|msd_lite)(=| is not set)' .config || true
+
+      - name: Download sources
+        run: make download -j"$(nproc)"
+
+      - name: Build an7581
+        run: make -j"$(nproc)"
+
+      - name: Verify firmware content
+        run: |
+          set -e
+          test -s files/etc/openclash/core/clash_meta
+          ls -l files/etc/openclash/core/
+          echo "== an7581 产物 =="
+          find bin/targets/airoha/an7581 -maxdepth 2 -type f | sort | head -60
+          manifest="$(find bin/targets/airoha/an7581 -name '*xg2010g*.manifest' | head -1)"
+          [ -n "$manifest" ] || manifest="$(grep -rl 'gemtek_xg2010g' bin/targets/airoha/an7581 --include='*.manifest' 2>/dev/null | head -1)"
+          [ -n "$manifest" ] || manifest="$(find bin/targets/airoha/an7581 -name '*.manifest' | head -1)"
+          echo "manifest: $manifest"
+          test -n "$manifest"
+          grep -Ei 'openclash|msd_lite|ddns-go' "$manifest" || {
+            echo "::error::manifest 里没有三插件，构建结果不对"
+            exit 1
+          }
+
+      - name: Pack an7581
+        run: |
+          mkdir -p release
+          tar --zstd -cf "release/ponwrt-an7581.tar.zst" -C bin/targets/airoha an7581
+
+      - name: Upload an7581
+        uses: actions/upload-artifact@v4
+        with:
+          name: ponwrt-an7581
+          path: release/*.tar.zst
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download firmware archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ponwrt-*
+          path: release
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: release
+        run: sha256sum *.tar.zst > sha256sums
+
+      - name: Resolve tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ]; then
+            tag="xg2010g-$(TZ=Asia/Shanghai date +%Y%m%d)-${GITHUB_SHA:0:8}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "使用的 tag：$tag"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            tag="${tag}-r${GITHUB_RUN_NUMBER}"
+          fi
+          args=(
+            "$tag"
+            release/*.tar.zst
+            release/sha256sums
+            --repo "$GITHUB_REPOSITORY"
+            --target "$GITHUB_SHA"
+            --title "PonWrt XG2010G $tag"
+            --generate-notes
+          )
+          if [ -z "$PRERELEASE" ] || [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"

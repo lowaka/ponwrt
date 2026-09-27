@@ -1,0 +1,33 @@
+# ============================================================
+# XG2010G 定制层：插件开关
+# .github/workflows/xg2010g-build.yml 会在 make defconfig 之前
+# 用 ./scripts/kconfig.pl + + 把它追加到 configs/*.config 之后（本文件优先）。
+# 放在 custom/ 下，是为了同步 pbs05/ponwrt 上游时不被覆盖。
+# ============================================================
+
+# ---------- 要编进固件的插件 ----------
+CONFIG_PACKAGE_luci-app-openclash=y
+CONFIG_PACKAGE_luci-app-msd_lite=y
+CONFIG_PACKAGE_luci-app-ddns-go=y
+CONFIG_PACKAGE_ddns-go=y
+
+# 中文界面（OpenClash 自带 zh-cn 语言文件，无需单独选项）
+CONFIG_PACKAGE_luci-i18n-msd_lite-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-ddns-go-zh-cn=y
+
+# ---------- OpenClash 依赖（defconfig 会自动补，这里显式列出便于核查） ----------
+CONFIG_PACKAGE_luci-compat=y
+CONFIG_PACKAGE_dnsmasq-full=y
+CONFIG_PACKAGE_bash=y
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_ca-bundle=y
+CONFIG_PACKAGE_ruby=y
+CONFIG_PACKAGE_ruby-yaml=y
+CONFIG_PACKAGE_ip-full=y
+CONFIG_PACKAGE_unzip=y
+CONFIG_PACKAGE_kmod-inet-diag=y
+CONFIG_PACKAGE_kmod-tun=y
+CONFIG_PACKAGE_kmod-nft-tproxy=y
+
+# ---------- 明确不要的（与上游保持一致，避免被自动选中） ----------
+# CONFIG_PACKAGE_dnsmasq is not set
