@@ -68,7 +68,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dl
-          key: ponwrt-xg2010g-dl-${{ hashFiles('feeds.conf.default', 'configs/*.config', 'custom/config.fragment', 'custom/config.device') }}
+          key: ponwrt-xg2010g-dl-${{ hashFiles('feeds.conf.default', 'configs/*.config', 'custom/config.fragment', 'custom/config.device', 'custom/config.trim') }}
           restore-keys: |
             ponwrt-dl-an7581-
             ponwrt-dl-
@@ -95,8 +95,9 @@ jobs:
             configs/release.config \
             custom/config.fragment > .config
 
-          # 再叠加"只保留 XG2010G"的机型选择（后面的文件覆盖前面的，含 "# ... is not set"）
-          ./scripts/kconfig.pl + .config custom/config.device > .config.new
+          # 再叠加"只保留 XG2010G"的机型选择 + 去掉与本机无关的包
+          # （后面的文件覆盖前面的，含 "# ... is not set"）
+          ./scripts/kconfig.pl + + .config custom/config.device custom/config.trim > .config.new
           mv .config.new .config
 
           # 双保险：把除 XG2010G 以外的机型全部关掉（上游以后新增机型也会被这条覆盖）
@@ -114,6 +115,15 @@ jobs:
           [ "$n" = "1" ] || { echo "::error::机型数量不是 1（实际 $n），机型收敛失败"; exit 1; }
           echo "== 三插件在 .config 里的状态 =="
           grep -E 'CONFIG_PACKAGE_(luci-app-openclash|luci-app-msd_lite|luci-app-ddns-go|ddns-go|msd_lite)(=| is not set)' .config || true
+          echo "== 精简项检查（若仍为 =y 说明被依赖自动选回，会给出警告）=="
+          for sym in CONFIG_PACKAGE_u-boot-an7581_nokia_xg-040g-md \
+                     CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray \
+                     CONFIG_PACKAGE_luci-app-rclone_INCLUDE_rclone-ng \
+                     CONFIG_PACKAGE_MAC80211_MESH CONFIG_PACKAGE_MAC80211_DEBUGFS; do
+            grep -q "^$sym=y$" .config && echo "::warning::$sym 仍为 =y"
+          done || true
+          echo "== USB / 无线相关（=m 表示只编译成包、不装进固件）=="
+          grep -E 'CONFIG_PACKAGE_[^=]*(usb|mt7915|mt7916|mt7996|wpad|mac80211|hostapd)[^=]*=' .config | sort || true
 
       - name: Download sources
         run: make download -j"$(nproc)"
@@ -135,6 +145,10 @@ jobs:
             echo "::error::manifest 里没有三插件，构建结果不对"
             exit 1
           }
+          echo "== 镜像内容体检 =="
+          echo "镜像内软件包总数：$(grep -c . "$manifest")"
+          echo "-- USB / 风扇 / 无线 / 其它机型 相关包（正常应为空或只有必要项）--"
+          grep -Ei 'usb|fan|nct7802|mt7915|mt7916|mt7996|bluetooth|passwall|rclone|u-boot-an7581|znxt|nokia|fiberhome|unionman|hg5' "$manifest" || echo "（无）"
 
       - name: Pack XG2010G
         run: |

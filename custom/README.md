@@ -86,3 +86,24 @@ make -j"$(nproc)"
 想再加回某个机型：在 `custom/config.device` 里把该机型的 `# ... is not set` 删掉（或改成 `=y`），
 并同步修改 workflow 里那条 `sed` 的例外名单。想进一步减小体积（只留 sysupgrade、不要 recovery 镜像），
 把打包步骤里的 `files=(*xg2010g*)` 换成 `files=(*xg2010g*sysupgrade*)` 即可。
+## 去掉与本机无关的包（2026-10-01 追加）
+
+XG2010G 没有 USB 口、没有风扇、没有 WiFi 射频。把"会真正装进固件"的包表拉出来核对：
+
+- **USB / 无线那一批**（`kmod-usb3`、`kmod-usb-core`、`kmod-usb-storage`、`kmod-usb-storage-uas`、
+  `kmod-usb-ledtrig-usbport`、`kmod-mt7915e`、`kmod-mt7916-firmware`、`kmod-mac80211`、`wpad-openssl` …）
+  在上游 `configs/an7581.config` 里都是 **`=m`** —— 只编译成软件包、**不装进固件**，所以镜像里本来就没有它们。
+- **风扇**：`fan2go` / `fancontrol` / `lm-sensors` / `kmod-hwmon-nct7802` 全部未选中。
+- 真正会被装进固件、且与本机无关的残留只有几项，于是新增 `custom/config.trim`：
+
+| 关闭项 | 原因 | 影响 |
+| --- | --- | --- |
+| `u-boot-an7581_nokia_xg-040g-md` | 给 Nokia XG-040G-MD 用的 U-Boot（9 机型配置的遗留）。`package/boot/uboot-airoha` 的 `Package/u-boot/install` 是空段，不进 rootfs，但会白触发一次 U-Boot 编译 | 省一次编译 |
+| `luci-app-passwall_INCLUDE_*`（8 项） | PassWall 本体并没有选入固件，这些子选项是无效残留 | 无（清噪声） |
+| `luci-app-rclone_INCLUDE_*`（2 项） | 同上 | 无 |
+| `MAC80211_DEBUGFS` / `MAC80211_MESH` | 本机无 WiFi 射频（mac80211 本身是 `=m`） | 无 |
+
+构建日志里可以看到结果：`Configure` 步骤打印精简项状态与 USB/无线项的值，
+`Verify firmware content` 步骤打印**镜像内软件包总数**以及"USB / 风扇 / 无线 / 其它机型"相关包（正常为空）。
+
+本地用真实 `kconfig.pl` 复现：进镜像的包 **220 → 207**，机型数仍为 1。

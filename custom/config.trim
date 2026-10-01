@@ -1,0 +1,36 @@
+# ============================================================
+# XG2010G 定制层：去掉与本机无关的内容
+# 由 .github/workflows/xg2010g-build.yml 追加在 configs/*.config 之后
+# （kconfig.pl 的 add 语义：后面的文件覆盖前面的，包含 "# ... is not set"）。
+#
+# XG2010G 硬件：10G PON + 4×LAN（含 2.5G/10G PHY），
+# **没有 USB 口、没有风扇、没有 WiFi 射频**。
+#
+# 说明：USB / 无线相关的 kmod 在上游 configs/an7581.config 里本来就是 =m
+#      （只编译成包、不装进固件），所以固件里并没有它们；
+#      这里显式关掉的是「会被装进固件」或「会白白触发编译」的残留项。
+# ============================================================
+
+# ---------- 其它机型的 U-Boot（9 机型配置的遗留） ----------
+# package/boot/uboot-airoha 的 Package/u-boot/install 是空的（只往 staging 放二进制），
+# 装不进 rootfs，但选中它会让 CI 白白编译一次 Nokia 机型的 U-Boot。
+# XG2010G 的 preloader/FIP 来自 pbs05/uboot-an758x，由用户单独刷入，与本包无关。
+# CONFIG_PACKAGE_u-boot-an7581_nokia_xg-040g-md is not set
+
+# ---------- 未选入的第三方 App 的子选项（PassWall / rclone 本体都没选） ----------
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Haproxy is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Server is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Simple_Obfs is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Geoview is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Plugin is not set
+# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray is not set
+# CONFIG_PACKAGE_luci-app-rclone_INCLUDE_rclone-ng is not set
+# CONFIG_PACKAGE_luci-app-rclone_INCLUDE_rclone-webui is not set
+
+# ---------- 无线相关（本机无 WiFi 射频） ----------
+# mac80211 / mt7915e / mt7916-firmware / wpad 在上游已是 =m，不会进固件；
+# 这里关掉仅剩的两个编译期开关。
+# CONFIG_PACKAGE_MAC80211_DEBUGFS is not set
+# CONFIG_PACKAGE_MAC80211_MESH is not set
