@@ -100,19 +100,22 @@ jobs:
           ./scripts/kconfig.pl + + .config custom/config.device custom/config.trim > .config.new
           mv .config.new .config
 
-          # 双保险：把除 XG2010G 以外的机型全部关掉（上游以后新增机型也会被这条覆盖）
+          # 双保险：只保留 CONFIG_TARGET_DEVICE_*（多选）里的 XG2010G。
+          # 注意：绝不能动 CONFIG_TARGET_airoha_an7581_DEVICE_*，那是单选 choice，
+          # 改了会让 kconfig 报 "changes choice state"，并在 defconfig 后把机型选择清空。
           sed -i -E 's/^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_(.+)=y$/# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_\1 is not set/' .config
           sed -i -E 's/^# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_gemtek_xg2010g is not set$/CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_gemtek_xg2010g=y/' .config
-          sed -i -E 's/^CONFIG_TARGET_airoha_an7581_DEVICE_(.+)=y$/# CONFIG_TARGET_airoha_an7581_DEVICE_\1 is not set/' .config
-          sed -i -E 's/^# CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xg2010g is not set$/CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xg2010g=y/' .config
+
+          echo "== defconfig 之前的机型行 =="
+          grep -E 'TARGET_DEVICE_airoha_an7581_DEVICE_gemtek_xg2010g' .config || true
 
           make defconfig
 
           echo "== 本次编译的机型 =="
-          grep -E '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_.*=y$' .config
-          n="$(grep -cE '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_.*=y$' .config)"
+          grep -E '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_.*=y$' .config || true
+          n="$(grep -cE '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_.*=y$' .config || true)"
           echo "机型数量：$n"
-          [ "$n" = "1" ] || { echo "::error::机型数量不是 1（实际 $n），机型收敛失败"; exit 1; }
+          [ "$n" = "1" ] || { echo "::error::机型数量不是 1（实际 $n），机型收敛失败"; grep -n 'TARGET_DEVICE_airoha' .config | head -20; exit 1; }
           echo "== 三插件在 .config 里的状态 =="
           grep -E 'CONFIG_PACKAGE_(luci-app-openclash|luci-app-msd_lite|luci-app-ddns-go|ddns-go|msd_lite)(=| is not set)' .config || true
           echo "== 精简项检查（若仍为 =y 说明被依赖自动选回，会给出警告）=="
