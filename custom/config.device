@@ -1,0 +1,24 @@
+# ============================================================
+# XG2010G 定制层：只编译 XG2010G 一个机型
+# 由 .github/workflows/xg2010g-build.yml 追加在 configs/*.config 之后
+# （kconfig.pl 的 add 语义：后面的文件覆盖前面的，包括 "# ... is not set"）。
+#
+# 背景：上游 configs/an7581.config 一次选中 9 个 an7581 机型
+# （fiberhome_hg5382a / hg5585f-ct / hg5585f-cu / gemtek_xg2010g /
+#   nokia_xg-040g-md-ubi / nokia_xg-040g-tf-ubi / unionman_ung00a /
+#   znxt_zn504xg-d / znxt_zn515xg-d），产物和 packages 目录都很大。
+# 本文件把除 XG2010G 以外的机型全部关掉。
+# ============================================================
+
+# ---------- 唯一要编译的机型 ----------
+CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_gemtek_xg2010g=y
+
+# ---------- 其余 8 个机型全部关闭 ----------
+# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_fiberhome_hg5382a is not set
+# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_fiberhome_hg5585f-ct is not set
+# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_fiberhome_hg5585f-cu is not set
+# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi is not set
+# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_nokia_xg-040g-tf-ubi is not set
+# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_unionman_ung00a is not set
+# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_znxt_zn504xg-d is not set
+# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_znxt_zn515xg-d is not set

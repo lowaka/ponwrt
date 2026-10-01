@@ -2,6 +2,11 @@ name: Build XG2010G Firmware
 
 # 上游的 .github/workflows/release.yml 保持原样；这份是带 custom/ 定制层的构建 + 发布。
 # 定制内容全部放在 custom/ 目录里，同步 pbs05/ponwrt 上游时不会被覆盖。
+#
+# 本 workflow 只编译 XG2010G（airoha/an7581 → gemtek_xg2010g）：
+#   上游 configs/an7581.config 默认选中 9 个 an7581 机型，这里用
+#   custom/config.device + 一条 sed 规则把它收敛成 1 个机型，
+#   产物也只打包 xg2010g 的文件（不再打包整个 an7581 目录和 packages）。
 
 on:
   workflow_dispatch:
@@ -31,7 +36,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build an7581 (XG2010G)
+    name: Build an7581 (XG2010G only)
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
@@ -63,7 +68,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dl
-          key: ponwrt-xg2010g-dl-${{ hashFiles('feeds.conf.default', 'configs/*.config', 'custom/config.fragment') }}
+          key: ponwrt-xg2010g-dl-${{ hashFiles('feeds.conf.default', 'configs/*.config', 'custom/config.fragment', 'custom/config.device') }}
           restore-keys: |
             ponwrt-dl-an7581-
             ponwrt-dl-
@@ -83,13 +88,30 @@ jobs:
       - name: Bundle OpenClash core (mihomo)
         run: bash custom/scripts/fetch-openclash-core.sh
 
-      - name: Configure an7581
+      - name: Configure an7581 (XG2010G only)
         run: |
           ./scripts/kconfig.pl + + \
             configs/an7581.config \
             configs/release.config \
             custom/config.fragment > .config
+
+          # 再叠加"只保留 XG2010G"的机型选择（后面的文件覆盖前面的，含 "# ... is not set"）
+          ./scripts/kconfig.pl + .config custom/config.device > .config.new
+          mv .config.new .config
+
+          # 双保险：把除 XG2010G 以外的机型全部关掉（上游以后新增机型也会被这条覆盖）
+          sed -i -E 's/^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_(.+)=y$/# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_\1 is not set/' .config
+          sed -i -E 's/^# CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_gemtek_xg2010g is not set$/CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_gemtek_xg2010g=y/' .config
+          sed -i -E 's/^CONFIG_TARGET_airoha_an7581_DEVICE_(.+)=y$/# CONFIG_TARGET_airoha_an7581_DEVICE_\1 is not set/' .config
+          sed -i -E 's/^# CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xg2010g is not set$/CONFIG_TARGET_airoha_an7581_DEVICE_gemtek_xg2010g=y/' .config
+
           make defconfig
+
+          echo "== 本次编译的机型 =="
+          grep -E '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_.*=y$' .config
+          n="$(grep -cE '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_.*=y$' .config)"
+          echo "机型数量：$n"
+          [ "$n" = "1" ] || { echo "::error::机型数量不是 1（实际 $n），机型收敛失败"; exit 1; }
           echo "== 三插件在 .config 里的状态 =="
           grep -E 'CONFIG_PACKAGE_(luci-app-openclash|luci-app-msd_lite|luci-app-ddns-go|ddns-go|msd_lite)(=| is not set)' .config || true
 
@@ -105,26 +127,35 @@ jobs:
           test -s files/etc/openclash/core/clash_meta
           ls -l files/etc/openclash/core/
           echo "== an7581 产物 =="
-          find bin/targets/airoha/an7581 -maxdepth 2 -type f | sort | head -60
-          manifest="$(find bin/targets/airoha/an7581 -name '*xg2010g*.manifest' | head -1)"
-          [ -n "$manifest" ] || manifest="$(grep -rl 'gemtek_xg2010g' bin/targets/airoha/an7581 --include='*.manifest' 2>/dev/null | head -1)"
-          [ -n "$manifest" ] || manifest="$(find bin/targets/airoha/an7581 -name '*.manifest' | head -1)"
+          ls -lh bin/targets/airoha/an7581/ | sed -n '1,60p'
+          manifest="$(ls bin/targets/airoha/an7581/*xg2010g*.manifest 2>/dev/null | head -1)"
+          [ -n "$manifest" ] || { echo "::error::没有找到 XG2010G 的 manifest"; exit 1; }
           echo "manifest: $manifest"
-          test -n "$manifest"
           grep -Ei 'openclash|msd_lite|ddns-go' "$manifest" || {
             echo "::error::manifest 里没有三插件，构建结果不对"
             exit 1
           }
 
-      - name: Pack an7581
+      - name: Pack XG2010G
         run: |
           mkdir -p release
-          tar --zstd -cf "release/ponwrt-an7581.tar.zst" -C bin/targets/airoha an7581
+          cd bin/targets/airoha/an7581
+          shopt -s nullglob
+          files=(*xg2010g*)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::没有生成 xg2010g 产物"
+            exit 1
+          fi
+          echo "== 打包文件 =="
+          ls -lh "${files[@]}"
+          tar --zstd -cf "$GITHUB_WORKSPACE/release/ponwrt-xg2010g.tar.zst" "${files[@]}"
+          echo "== 压缩包 =="
+          ls -lh "$GITHUB_WORKSPACE/release/"
 
-      - name: Upload an7581
+      - name: Upload XG2010G
         uses: actions/upload-artifact@v4
         with:
-          name: ponwrt-an7581
+          name: ponwrt-xg2010g
           path: release/*.tar.zst
           if-no-files-found: error
           retention-days: 14

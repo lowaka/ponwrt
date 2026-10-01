@@ -66,3 +66,23 @@ make -j"$(nproc)"
 
 - 本 fork 没有 `PONWRT_APK_PRIVATE_KEY` secret，构建时 OpenWrt 会自动生成一次性 apk 签名密钥；想和上游用同一把签名密钥，就把私钥配成仓库 secret。
 - `configs/an7581.config` 会一次性构建 9 个 an7581 机型，插件是全局打开的；只关心 XG2010G 的话，忽略其它机型的镜像即可。
+
+## 只编 XG2010G（2026-10-01 调整）
+
+上游 `configs/an7581.config` 一次选中 **9 个 an7581 机型**，加上打包步骤原本把整个
+`bin/targets/airoha/an7581`（含 9 个机型的镜像和 packages 目录）塞进压缩包，
+所以产物很大。现在改成只编 XG2010G：
+
+| 改动 | 说明 |
+| --- | --- |
+| 新增 `custom/config.device` | 明确只选 `CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_gemtek_xg2010g=y`，并把其余 8 个机型写成 `# ... is not set`（kconfig.pl 的 add 语义是后面的文件覆盖前面，包含关闭项） |
+| `xg2010g-build.yml` 的配置步骤 | 先用上游方式生成 `.config`，再叠加 `custom/config.device`，然后用一条 `sed` 把除 XG2010G 以外的所有 `DEVICE...=y` 全部改成 `is not set`（上游以后新增机型也会被这条覆盖） |
+| 机型数量校验 | `make defconfig` 之后统计已选机型数，**不等于 1 就直接让构建失败**，避免又编出多机型 |
+| 打包步骤 | 只打包 `bin/targets/airoha/an7581/*xg2010g*`，产物名 `ponwrt-xg2010g.tar.zst`，artifact 名 `ponwrt-xg2010g`；不再打包 packages 目录和其它机型 |
+| dl 缓存 key | 加入 `custom/config.device`，配置变了会重新拉源码 |
+
+产物里包含（都是 XG2010G 的）：`*-recovery.itb`、`*-squashfs-sysupgrade.itb`、对应的 `.manifest`。
+
+想再加回某个机型：在 `custom/config.device` 里把该机型的 `# ... is not set` 删掉（或改成 `=y`），
+并同步修改 workflow 里那条 `sed` 的例外名单。想进一步减小体积（只留 sysupgrade、不要 recovery 镜像），
+把打包步骤里的 `files=(*xg2010g*)` 换成 `files=(*xg2010g*sysupgrade*)` 即可。
