@@ -141,8 +141,9 @@ jobs:
           ls -l files/etc/openclash/core/
           echo "== an7581 产物 =="
           ls -lh bin/targets/airoha/an7581/ | sed -n '1,60p'
-          manifest="$(ls bin/targets/airoha/an7581/*xg2010g*.manifest 2>/dev/null | head -1)"
-          [ -n "$manifest" ] || { echo "::error::没有找到 XG2010G 的 manifest"; exit 1; }
+          # 注意：只选一个机型时，manifest 名字是 ponwrt-airoha-an7581.manifest，不含设备名
+          manifest="$(ls bin/targets/airoha/an7581/*.manifest 2>/dev/null | head -1)"
+          [ -n "$manifest" ] || { echo "::error::目标目录里没有 manifest"; exit 1; }
           echo "manifest: $manifest"
           grep -Ei 'openclash|msd_lite|ddns-go' "$manifest" || {
             echo "::error::manifest 里没有三插件，构建结果不对"
@@ -158,7 +159,7 @@ jobs:
           mkdir -p release
           cd bin/targets/airoha/an7581
           shopt -s nullglob
-          files=(*xg2010g*)
+          files=(*xg2010g* *.manifest sha256sums)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::没有生成 xg2010g 产物"
             exit 1
