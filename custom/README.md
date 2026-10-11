@@ -6,54 +6,117 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `config.fragment` | 追加到 `.config` 的插件开关：OpenClash / msd_lite / ddns-go |
+| `feeds.conf.custom` | 额外 feed：`kenzok8/openwrt-daede`（daed 的 LuCI 面板只在它这里） |
+| `config.fragment` | **主要定制入口**：daed / IPTV / DDNS / 主题的插件开关 + daed 必需的内核开关 |
+| `config.device` | 只编译 XG2010G 一个机型（上游默认选 9 个 an7581 机型） |
+| `config.trim` | 去掉与本机无关的内容（USB / 无线 / 其它机型的 U-Boot 等） |
 | `files/` | 固件文件覆盖层。构建时整棵拷进 OpenWrt 顶层 `files/`，路径等于设备上的绝对路径 |
-| `files/etc/uci-defaults/99-xg2010g-defaults.sh` | 首次开机：LAN 固定 192.168.5.1，DHCP 192.168.5.100-249 |
-| `scripts/fetch-openclash-core.sh` | 构建时把最新 OpenClash 官方内核放到 `files/etc/openclash/core/clash_meta` |
+| `files/etc/uci-defaults/99-xg2010g-defaults.sh` | 首次开机：LAN 固定 192.168.5.1、DHCP 150-249、apk 源固定为官方 |
 | `upstream/release.yml.sha` | 上游 `release.yml` 的 blob sha 基线，同步时用来提示上游工作流变化 |
 
-## mihomo / OpenClash 内核是怎么进固件的
+## 插件定稿（2026-10-11）
 
-OpenClash 的 LuCI 包**不带内核**，内核是运行时放在 `/etc/openclash/core/clash_meta` 的。
-所以做法是：`make` 之前把内核下载到 `files/etc/openclash/core/clash_meta`。
-`files/` 是 OpenWrt 官方支持的 rootfs 覆盖层（`include/image.mk` 里 `prepare_rootfs ... $(TOPDIR)/files`），
-`make` 打 rootfs 时会整棵拷进去 —— 刷完机就自带内核，OpenClash 不用再联网下载，也不用手工上传。
+**透明代理只采用 daed**（eBPF/TC 数据面），OpenClash 与 Nikki 完全移除。
 
-- 来源：`vernesong/OpenClash` 的 `core` 分支 `meta/clash-linux-arm64.tar.gz`（OpenClash 官方自用内核，和界面里“更新内核”下载的是同一个）
-- 体积：约 10.7 MB
-- 形态：aarch64 静态 ELF（无 PT_INTERP），musl 的 OpenWrt 直接可跑
-- 校验：下载后检查 ELF 魔数 / aarch64 / 是否动态链接 / 体积，任一项不合格就换下一个镜像源，全部失败则构建报错
-- 留痕：内核来源与 sha256 写进 `/etc/openclash/core/.core-info`
+| 用途 | 选择 | 说明 |
+| --- | --- | --- |
+| 透明代理 | **daed** + `luci-app-daede` | eBPF 数据面在内核态，最省资源；实测常驻 146 MB、10% 单核 |
+| 代理数据 | `v2ray-geoip` / `v2ray-geosite` | daed 的路由规则用到 `geoip:cn` / `geosite:cn` |
+| IPTV | **rtp2httpd** + `luci-app-rtp2httpd` | 组播转单播 + **RTSP 时移回看** + FCC 快速换台 |
+| DDNS | `ddns-go` + `luci-app-ddns-go` | 实测 12.7 MB / 空载 CPU 0.033%（Lucky 是 37 MB / 0.200%） |
+| 主题 | **Aurora** | 由 workflow 克隆到 `package/luci-theme-aurora` |
 
-> 对比：MetaCubeX 官方 mihomo 最新 release 也是静态 aarch64，但解包后约 57 MB，本机闪存不划算，所以不用。
+**为什么不一次装多个代理**：daed / OpenClash / Nikki 会争抢 DNS 接管、TPROXY 与
+nftables 规则、路由表，**同一时间只应启用一个**。
+
+**移除 OpenClash 的连带影响（重要）**：OpenClash 是**整个 feed 树里唯一依赖 `ruby` 的包**，
+移除后 Ruby 全家桶（`libruby`、`ruby-*`、`lyaml`、`libyaml`，约 4.9 MiB）就没有任何依赖方了，
+`bash` / `unzip` 也只是为它而装。**以后若要重新装 OpenClash，必须先把这套 Ruby 装回来，
+否则它起不来。** Nikki 用 Go 写的 mihomo 内核，不需要 Ruby。
+
+## daed 的内核前提（最容易踩的坑）
+
+`immortalwrt/packages` 的 `net/daed/Makefile` 里写得很明确：
+
+```
+# You need enable KERNEL_DEBUG_INFO_BTF and KERNEL_BPF_EVENTS
+```
+
+而上游 `configs/an7581.config` **恰恰是反的**：
+
+```
+CONFIG_KERNEL_DEBUG_INFO_REDUCED=y      ← 与 DEBUG_INFO_BTF 互斥，必须先关掉
+# CONFIG_KERNEL_BPF_EVENTS is not set
+# CONFIG_KERNEL_BPF_STREAM_PARSER is not set
+```
+
+不修的话 daed **编译能过、运行时会失败**——它需要 `/sys/kernel/btf/vmlinux` 才能把
+路由规则编译成 BPF 程序。所以 `config.fragment` 里覆盖了这四项，workflow 的
+`Configure` 步骤会**断言**它们生效，缺一个就直接让构建失败，避免又出一个"能刷不能跑"的固件。
+
+BPF 工具链上游已经是「用宿主机 LLVM」的正确配置
+（`CONFIG_DEVEL=y` + `BPF_TOOLCHAIN_HOST=y` + `USE_LLVM_HOST=y`），
+省去从源码编译 LLVM 的 30~60 分钟；workflow 只做断言、不重复设置。
+
+## apk 源固定为官方
+
+上游 `package/emortal/default-settings/files/99-default-settings-chinese` 会：
+把 `apk_mirror` 默认成 `https://mirrors.vsean.net/openwrt`（**只是 302 跳到
+`mirrors.pku.edu.cn` 的中转层**），然后拿它无差别替换整个 `distfeeds.list`。
+
+而 `distfeeds.list` 里混着**只有源码、没有二进制索引**的 feed
+（上游的 `pon_drivers` / `pon_userspace`，以及本仓库加的 `daede`），
+替换后这些条目必然 404，每次 `apk update` 刷一片
+`ERROR: wget: exited with error 8`。实测：官方源上 `luci` 能取到、
+`daede` 也是 404 —— 说明这些条目**在任何服务器上都不该存在**，
+它们在构建期已编入镜像，运行时不需要 feed。
+
+`99-xg2010g-defaults.sh` 以 `99-` 开头，排在 `99-default-settings-chinese` 之后
+（`/etc/uci-defaults` 按文件名排序 source），因此在首次开机时覆盖它：改 `apk_mirror`、
+把 `distfeeds.list` 里的镜像换回官方、并删掉那几条注定 404 的源码型 feed 条目。
+
+> 末尾的 `exit 0` 不能省：`/etc/init.d/boot` 用 `( . "./$file" ) && applied=...`
+> 判定成功，返回非 0 的文件不会被清理、下次开机会重跑。
 
 ## 构建流程（`.github/workflows/xg2010g-build.yml`）
 
 1. checkout
 2. 装 build 依赖 + 复用上游的 `dl` 缓存
-3. `./scripts/feeds update -a && ./scripts/feeds install -a`
-4. 应用定制层：`cp -a custom/files/. files/`
-5. 抓内核：`bash custom/scripts/fetch-openclash-core.sh`
-6. 生成 `.config`：`./scripts/kconfig.pl + + configs/an7581.config configs/release.config custom/config.fragment`
-7. `make download` → `make -j"$(nproc)"`
-8. 打包 `ponwrt-an7581.tar.zst` + `sha256sums`，上传 artifact 并创建 Release
+3. **拼接 feeds**：`cat feeds.conf.default custom/feeds.conf.custom > feeds.conf`，
+   预检裸 `#` 行、确认 `daede` feed 在
+4. `./scripts/feeds update -a && ./scripts/feeds install -a`
+5. 应用定制层：`cp -a custom/files/. files/`
+6. **克隆 Aurora 主题**到 `package/luci-theme-aurora`
+7. 生成 `.config`：`kconfig.pl + + configs/an7581.config configs/release.config custom/config.fragment`，
+   再叠加 `custom/config.device` + `custom/config.trim`
+8. 机型收敛双保险 + `make defconfig` + **机型数必须等于 1** + **内核 BTF 断言**
+9. `make download` → `make -j"$(nproc)"`
+10. 校验 manifest：daed / luci-app-daede / v2ray-geo* / rtp2httpd / ddns-go / Aurora 必须在，
+    OpenClash / Nikki / mihomo / msd_lite / udpxy / lucky 必须不在
+11. 打包 `ponwrt-xg2010g.tar.zst`（**只含 sysupgrade 镜像 + manifest + sha256sums**）
+12. 上传 artifact 并创建 Release
 
 ## 本地复现
 
 ```sh
 ./scripts/feeds update -a && ./scripts/feeds install -a
 mkdir -p files && cp -a custom/files/. files/
-bash custom/scripts/fetch-openclash-core.sh
+git clone --depth 1 https://github.com/eamonxg/luci-theme-aurora.git package/luci-theme-aurora
+cat feeds.conf.default custom/feeds.conf.custom > feeds.conf   # 再 update/install 一次
 ./scripts/kconfig.pl + + configs/an7581.config configs/release.config custom/config.fragment > .config
+./scripts/kconfig.pl + + .config custom/config.device custom/config.trim > .config.new
+mv .config.new .config
 make defconfig
 make -j"$(nproc)"
 ```
 
 ## 改东西
 
-- 加减插件：改 `custom/config.fragment`，push 到 `master`；`custom/**` 的改动会按 `on.push.paths` 自动触发一次构建
+- 加减插件：改 `custom/config.fragment`，push 到 `master`；`custom/**` 的改动会按
+  `on.push.paths` 自动触发一次构建
 - 改默认设置：往 `custom/files/` 里加文件，路径就是设备上的绝对路径去掉前导 `/`
-- 内核版本：`fetch-openclash-core.sh` 每次构建都取 `core` 分支当时最新的内核；想固定版本就把 URL 换成带提交号的 raw 链接
+- 加 feed：写进 `custom/feeds.conf.custom`（**不要出现「裸 # 行」**，
+  `scripts/feeds` 的 `s/#.+$//` 会把它判成语法错误）
 
 ## 上游同步（`.github/workflows/sync-upstream.yml`）
 
@@ -64,8 +127,12 @@ make -j"$(nproc)"
 
 ## 注意
 
-- 本 fork 没有 `PONWRT_APK_PRIVATE_KEY` secret，构建时 OpenWrt 会自动生成一次性 apk 签名密钥；想和上游用同一把签名密钥，就把私钥配成仓库 secret。
-- `configs/an7581.config` 会一次性构建 9 个 an7581 机型，插件是全局打开的；只关心 XG2010G 的话，忽略其它机型的镜像即可。
+- 本 fork 没有 `PONWRT_APK_PRIVATE_KEY` secret，构建时 OpenWrt 会自动生成一次性 apk 签名密钥；
+  想和上游用同一把签名密钥，就把私钥配成仓库 secret。
+- **ponwrt 只支持 XG2010G，不支持 XR1710G**：上游 `target/linux/airoha/dts/` 里有
+  `an7581-gemtek-xg2010g.dts`，没有 XR1710G 的 dts，`an7581.mk` 里也没有对应设备块。
+  XR1710G 是 Wi-Fi 路由器（带 MT7996），走的是另一条线
+  （`naoki66/ImmortalWrt-for-Gemtek-brightspeed` 那个 fork）。
 
 ## 只编 XG2010G（2026-10-01 调整）
 
@@ -78,14 +145,12 @@ make -j"$(nproc)"
 | 新增 `custom/config.device` | 明确只选 `CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_gemtek_xg2010g=y`，并把其余 8 个机型写成 `# ... is not set`（kconfig.pl 的 add 语义是后面的文件覆盖前面，包含关闭项） |
 | `xg2010g-build.yml` 的配置步骤 | 先用上游方式生成 `.config`，再叠加 `custom/config.device`，然后用一条 `sed` 把除 XG2010G 以外的所有 `DEVICE...=y` 全部改成 `is not set`（上游以后新增机型也会被这条覆盖） |
 | 机型数量校验 | `make defconfig` 之后统计已选机型数，**不等于 1 就直接让构建失败**，避免又编出多机型 |
-| 打包步骤 | 只打包 `bin/targets/airoha/an7581/*xg2010g*`，产物名 `ponwrt-xg2010g.tar.zst`，artifact 名 `ponwrt-xg2010g`；不再打包 packages 目录和其它机型 |
-| dl 缓存 key | 加入 `custom/config.device`，配置变了会重新拉源码 |
+| 打包步骤 | 只打包 `*xg2010g*sysupgrade*` + `.manifest` + `sha256sums`，产物名 `ponwrt-xg2010g.tar.zst` |
+| dl 缓存 key | 加入 `custom/feeds.conf.custom` 与 `custom/config.device`，配置变了会重新拉源码 |
 
-产物里包含（都是 XG2010G 的）：`*-recovery.itb`、`*-squashfs-sysupgrade.itb`、对应的 `.manifest`。
+> 刷机走 U-Boot TFTP/HTTP，用不到 recovery 镜像，所以打包时不再包含它。
+> 想连 recovery 一起要，把 `files=(*xg2010g*sysupgrade* ...)` 换回 `files=(*xg2010g* ...)`。
 
-想再加回某个机型：在 `custom/config.device` 里把该机型的 `# ... is not set` 删掉（或改成 `=y`），
-并同步修改 workflow 里那条 `sed` 的例外名单。想进一步减小体积（只留 sysupgrade、不要 recovery 镜像），
-把打包步骤里的 `files=(*xg2010g*)` 换成 `files=(*xg2010g*sysupgrade*)` 即可。
 ## 去掉与本机无关的包（2026-10-01 追加）
 
 XG2010G 没有 USB 口、没有风扇、没有 WiFi 射频。把"会真正装进固件"的包表拉出来核对：
@@ -103,7 +168,5 @@ XG2010G 没有 USB 口、没有风扇、没有 WiFi 射频。把"会真正装进
 | `luci-app-rclone_INCLUDE_*`（2 项） | 同上 | 无 |
 | `MAC80211_DEBUGFS` / `MAC80211_MESH` | 本机无 WiFi 射频（mac80211 本身是 `=m`） | 无 |
 
-构建日志里可以看到结果：`Configure` 步骤打印精简项状态与 USB/无线项的值，
-`Verify firmware content` 步骤打印**镜像内软件包总数**以及"USB / 风扇 / 无线 / 其它机型"相关包（正常为空）。
-
-本地用真实 `kconfig.pl` 复现：进镜像的包 **220 → 207**，机型数仍为 1。
+构建日志里可以看到结果：`Configure` 步骤打印插件与内核开关状态，
+`Verify firmware content` 步骤打印**镜像内软件包总数**以及"应当缺席"的包（正常为空）。

@@ -1,33 +1,113 @@
 # ============================================================
-# XG2010G 定制层：插件开关
+# XG2010G 定制层：插件开关 + 内核开关
 # .github/workflows/xg2010g-build.yml 会在 make defconfig 之前
 # 用 ./scripts/kconfig.pl + + 把它追加到 configs/*.config 之后（本文件优先）。
 # 放在 custom/ 下，是为了同步 pbs05/ponwrt 上游时不被覆盖。
+#
+# 2026-10-11 定稿：透明代理**只采用 daed**（eBPF/TC 数据面），
+# OpenClash 与 Nikki 完全移除。IPTV 采用 rtp2httpd。
 # ============================================================
 
-# ---------- 要编进固件的插件 ----------
-CONFIG_PACKAGE_luci-app-openclash=y
-CONFIG_PACKAGE_luci-app-msd_lite=y
-CONFIG_PACKAGE_luci-app-ddns-go=y
+# ---------- 内核：daed 的硬性前提 ----------
+# immortalwrt/packages 的 net/daed/Makefile 里写得很明确：
+#     # You need enable KERNEL_DEBUG_INFO_BTF and KERNEL_BPF_EVENTS
+# 而上游 configs/an7581.config 恰恰是反的：
+#     CONFIG_KERNEL_DEBUG_INFO_REDUCED=y   （与 DEBUG_INFO_BTF 互斥）
+#     # CONFIG_KERNEL_BPF_EVENTS is not set
+#     # CONFIG_KERNEL_BPF_STREAM_PARSER is not set
+# 不修的话 daed 编译能过、运行时会因拿不到 /sys/kernel/btf/vmlinux 而失败。
+# DEBUG_INFO_BTF 与 DEBUG_INFO_REDUCED 二选一，必须先关后者。
+CONFIG_KERNEL_DEBUG_INFO_REDUCED=
+CONFIG_KERNEL_DEBUG_INFO_BTF=y
+CONFIG_KERNEL_BPF_EVENTS=y
+CONFIG_KERNEL_BPF_STREAM_PARSER=y
+
+# BPF 工具链：上游 configs/an7581.config 里已经是宿主机 LLVM
+# （CONFIG_DEVEL=y + BPF_TOOLCHAIN_HOST=y + USE_LLVM_HOST=y），
+# 这里不重复设置，只在 workflow 里断言它没被改掉。
+
+# ---------- 透明代理：只留 daed ----------
+CONFIG_PACKAGE_daed=y
+CONFIG_PACKAGE_luci-app-daede=y
+# 面板的后端选择（choice）：要 daed 后端，不要 dae 后端。
+# 这两个符号由 luci-app-daede 的 Makefile 自己定义，所以必须写在它之后。
+CONFIG_PACKAGE_luci-app-daede_daed=y
+# CONFIG_PACKAGE_luci-app-daede_dae is not set
+
+# daed 的路由规则里用到 geoip:cn / geosite:cn，两份数据要进固件。
+# 它们自己 DEPENDS 于 daed，这里显式列出便于在 .config 里核对。
+CONFIG_PACKAGE_v2ray-geoip=y
+CONFIG_PACKAGE_v2ray-geosite=y
+
+# daed 的 kmod 依赖（Makefile 里 DEPENDS 已声明，defconfig 会自动补；
+# 上游 an7581.config 里这三项原本都是 not set，显式写出便于核查是否真的进来了）
+CONFIG_PACKAGE_kmod-sched-core=y
+CONFIG_PACKAGE_kmod-sched-bpf=y
+CONFIG_PACKAGE_kmod-xdp-sockets-diag=y
+CONFIG_PACKAGE_kmod-veth=y
+CONFIG_PACKAGE_kmod-inet-diag=y
+
+# ---------- IPTV：rtp2httpd（组播转单播 + RTSP 回看 + FCC 换台）----------
+# 不用 msd_lite / udpxy：msd_lite 不支持 RTSP，等于没有回看与快速换台。
+CONFIG_PACKAGE_rtp2httpd=y
+CONFIG_PACKAGE_luci-app-rtp2httpd=y
+CONFIG_PACKAGE_luci-i18n-rtp2httpd-zh-cn=y
+# CONFIG_PACKAGE_msd_lite is not set
+# CONFIG_PACKAGE_luci-app-msd_lite is not set
+# CONFIG_PACKAGE_udpxy is not set
+
+# ---------- DDNS ----------
+# 只做 DDNS，ddns-go 已满足（实测常驻 12.7 MB / 空载 CPU 0.033%，
+# 而 Lucky 是 37 MB / 0.200%，内存 3 倍、CPU 6 倍，且 1.4.10 之后不再开源）。
 CONFIG_PACKAGE_ddns-go=y
-
-# 中文界面（OpenClash 自带 zh-cn 语言文件，无需单独选项）
-CONFIG_PACKAGE_luci-i18n-msd_lite-zh-cn=y
+CONFIG_PACKAGE_luci-app-ddns-go=y
 CONFIG_PACKAGE_luci-i18n-ddns-go-zh-cn=y
+# ---------- 主题：Aurora ----------
+# 包由 workflow 从 eamonxg/luci-theme-aurora 克隆到 package/luci-theme-aurora
+# 后参与编译（它的 Makefile 在仓库根目录，用普通 feed 引入会得到错误的包名）。
+CONFIG_PACKAGE_luci-theme-aurora=y
 
-# ---------- OpenClash 依赖（defconfig 会自动补，这里显式列出便于核查） ----------
+# ---------- daed 用到的通用依赖 ----------
 CONFIG_PACKAGE_luci-compat=y
 CONFIG_PACKAGE_dnsmasq-full=y
-CONFIG_PACKAGE_bash=y
 CONFIG_PACKAGE_curl=y
 CONFIG_PACKAGE_ca-bundle=y
-CONFIG_PACKAGE_ruby=y
-CONFIG_PACKAGE_ruby-yaml=y
 CONFIG_PACKAGE_ip-full=y
-CONFIG_PACKAGE_unzip=y
-CONFIG_PACKAGE_kmod-inet-diag=y
-CONFIG_PACKAGE_kmod-tun=y
-CONFIG_PACKAGE_kmod-nft-tproxy=y
 
-# ---------- 明确不要的（与上游保持一致，避免被自动选中） ----------
+# ============================================================
+# 以下为「明确不要」的项。写成 "# ... is not set" 是**有意义的关闭指令**，
+# 不要用 grep -v '^#' 之类的写法把它们过滤掉。
+# ============================================================
+
+# ---------- 2026-10-11：OpenClash 与 Nikki 完全移除 ----------
+# 取舍过程：两者用的都是 mihomo 内核、只差界面，与 daed 争抢 DNS 接管 /
+# TPROXY / nftables 规则 / 路由表，**同一时间只应启用一个**。
+# 最终只留 daed（eBPF，数据面在内核态，最省资源）。
+#
+# OpenClash 的连带影响（重要）：
+#   OpenClash 是**整个 feed 树里唯一依赖 ruby 的包**，移除后 Ruby 全家桶
+#   （libruby / ruby-* / lyaml / libyaml，约 4.9 MiB）就没有任何依赖方了；
+#   bash / unzip 也只是为了它才装的。以后若要重新装 OpenClash，
+#   必须先把这套 Ruby 装回来，否则它起不来。
+#   Nikki 用 Go 写的 mihomo 内核，不需要 Ruby。
+# CONFIG_PACKAGE_luci-app-openclash is not set
+# CONFIG_PACKAGE_luci-i18n-openclash-zh-cn is not set
+# CONFIG_PACKAGE_luci-app-nikki is not set
+# CONFIG_PACKAGE_luci-i18n-nikki-zh-cn is not set
+# CONFIG_PACKAGE_nikki is not set
+# CONFIG_PACKAGE_mihomo-meta is not set
+# CONFIG_PACKAGE_mihomo is not set
+
+# 旧的 daed 界面（只有 d 结尾那个）不装，用 luci-app-daede。
+# CONFIG_PACKAGE_luci-app-daed is not set
+# CONFIG_PACKAGE_luci-i18n-daed-zh-cn is not set
+
+# ---------- Lucky：XG2010G 不使用 ----------
+# 上游 an7581.config 里 lucky / luci-app-lucky 是 =m、luci-i18n-lucky-zh-cn 是 =y，
+# 要完全去掉三个都得显式写成 not set（=m 的仍会编译出 .apk）。
+# CONFIG_PACKAGE_lucky is not set
+# CONFIG_PACKAGE_luci-app-lucky is not set
+# CONFIG_PACKAGE_luci-i18n-lucky-zh-cn is not set
+
+# ---------- 与上游保持一致 ----------
 # CONFIG_PACKAGE_dnsmasq is not set

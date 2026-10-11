@@ -7,6 +7,11 @@ name: Build XG2010G Firmware
 #   上游 configs/an7581.config 默认选中 9 个 an7581 机型，这里用
 #   custom/config.device + 一条 sed 规则把它收敛成 1 个机型，
 #   产物也只打包 xg2010g 的文件（不再打包整个 an7581 目录和 packages）。
+#
+# 2026-10-11：代理插件改为**只采用 daed**（OpenClash / Nikki 完全移除），
+# IPTV 改用 rtp2httpd，主题固定 Aurora。daed 需要 KERNEL_DEBUG_INFO_BTF +
+# KERNEL_BPF_EVENTS，而上游 configs/an7581.config 恰好是反的，这两条在
+# custom/config.fragment 里覆盖（该文件最后追加，优先级最高）。
 
 on:
   workflow_dispatch:
@@ -68,13 +73,30 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dl
-          key: ponwrt-xg2010g-dl-${{ hashFiles('feeds.conf.default', 'configs/*.config', 'custom/config.fragment', 'custom/config.device', 'custom/config.trim') }}
+          key: ponwrt-xg2010g-dl-${{ hashFiles('feeds.conf.default', 'configs/*.config', 'custom/feeds.conf.custom', 'custom/config.fragment', 'custom/config.device', 'custom/config.trim') }}
           restore-keys: |
             ponwrt-dl-an7581-
             ponwrt-dl-
 
       - name: Install feeds
         run: |
+          # [custom] 把定制 feed 追加到 feeds.conf（即 feeds.conf.default 之后）。
+          # 上游 ponwrt 没有 daed 面板所在的 kenzok8/openwrt-daede feed。
+          if [ -f custom/feeds.conf.custom ]; then
+            cat feeds.conf.default custom/feeds.conf.custom > feeds.conf
+          else
+            cp feeds.conf.default feeds.conf
+          fi
+          echo "== feeds.conf =="
+          cat feeds.conf
+          # scripts/feeds 剥注释用的是 s/#.+$//，.+ 要求 # 后至少一个字符，
+          # 所以「裸 # 行」不会被当注释，会报 Syntax error in feeds.conf, line N。
+          if grep -n '^#$' feeds.conf; then
+            echo "::error::feeds.conf 存在裸 # 行（上面已列出行号）"
+            exit 1
+          fi
+          grep -q '^src-git daede ' feeds.conf || { echo "::error::缺 daede feed"; exit 1; }
+
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
@@ -85,8 +107,16 @@ jobs:
           echo "== files/ 覆盖层内容 =="
           find files -type f | sort
 
-      - name: Bundle OpenClash core (mihomo)
-        run: bash custom/scripts/fetch-openclash-core.sh
+      - name: Add Aurora theme package
+        run: |
+          # Aurora 主题的 Makefile 在仓库根目录，而 luci.mk 用「目录名」推导包名
+          # （LUCI_NAME?=$(notdir ${CURDIR})）。必须克隆到 package/luci-theme-aurora，
+          # 否则包名会变成 "aurora"，CONFIG_PACKAGE_luci-theme-aurora 不会生效。
+          rm -rf package/luci-theme-aurora
+          git clone --depth 1 https://github.com/eamonxg/luci-theme-aurora.git package/luci-theme-aurora
+          echo "== Aurora 主题版本 =="
+          grep -E '^(PKG_VERSION|PKG_RELEASE):=' package/luci-theme-aurora/Makefile || true
+          ls -d package/luci-theme-aurora/htdocs/luci-static/*/ 2>/dev/null || true
 
       - name: Configure an7581 (XG2010G only)
         run: |
@@ -116,8 +146,21 @@ jobs:
           n="$(grep -cE '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_.*=y$' .config || true)"
           echo "机型数量：$n"
           [ "$n" = "1" ] || { echo "::error::机型数量不是 1（实际 $n），机型收敛失败"; grep -n 'TARGET_DEVICE_airoha' .config | head -20; exit 1; }
-          echo "== 三插件在 .config 里的状态 =="
-          grep -E 'CONFIG_PACKAGE_(luci-app-openclash|luci-app-msd_lite|luci-app-ddns-go|ddns-go|msd_lite)(=| is not set)' .config || true
+          echo "== 透明代理 / IPTV / DDNS 在 .config 里的状态 =="
+          grep -E 'CONFIG_PACKAGE_(luci-app-daede|daed|v2ray-geoip|v2ray-geosite|luci-app-rtp2httpd|rtp2httpd|ddns-go|luci-app-ddns-go|luci-theme-aurora|luci-app-openclash|luci-app-nikki|nikki|mihomo-meta|lucky|luci-app-lucky|msd_lite)(=| is not set)' .config | sort || true
+          echo "== daed 后端选择（应为 _daed=y, _dae 未设）=="
+          grep -E 'CONFIG_PACKAGE_luci-app-daede_(daed|dae)(=| is not set)' .config || true
+          echo "== daed 的 kmod 依赖 =="
+          grep -E 'CONFIG_PACKAGE_kmod-(sched-core|sched-bpf|xdp-sockets-diag|veth|inet-diag)=' .config | sort || true
+          echo "== daed 的内核前提（缺一不可）=="
+          for sym in CONFIG_KERNEL_DEBUG_INFO_BTF CONFIG_KERNEL_BPF_EVENTS CONFIG_KERNEL_BPF_STREAM_PARSER; do
+            if grep -q "^$sym=y$" .config; then echo "  [OK]  $sym=y"; else echo "::error::$sym 不是 =y，daed 运行时会拿不到 /sys/kernel/btf/vmlinux"; exit 1; fi
+          done
+          if grep -q '^CONFIG_KERNEL_DEBUG_INFO_REDUCED=y$' .config; then
+            echo "::error::DEBUG_INFO_REDUCED 与 DEBUG_INFO_BTF 互斥，仍为 =y"; exit 1
+          fi
+          echo "== BPF 工具链（应为宿主机 LLVM，避免从源码编 LLVM）=="
+          grep -E '^CONFIG_(DEVEL|BPF_TOOLCHAIN_HOST|BPF_TOOLCHAIN_BUILD_LLVM|BPF_TOOLCHAIN_NONE|USE_LLVM_HOST)=' .config | sort || true
           echo "== 精简项检查（若仍为 =y 说明被依赖自动选回，会给出警告）=="
           for sym in CONFIG_PACKAGE_u-boot-an7581_nokia_xg-040g-md \
                      CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray \
@@ -137,18 +180,23 @@ jobs:
       - name: Verify firmware content
         run: |
           set -e
-          test -s files/etc/openclash/core/clash_meta
-          ls -l files/etc/openclash/core/
           echo "== an7581 产物 =="
           ls -lh bin/targets/airoha/an7581/ | sed -n '1,60p'
           # 注意：只选一个机型时，manifest 名字是 ponwrt-airoha-an7581.manifest，不含设备名
           manifest="$(ls bin/targets/airoha/an7581/*.manifest 2>/dev/null | head -1)"
           [ -n "$manifest" ] || { echo "::error::目标目录里没有 manifest"; exit 1; }
           echo "manifest: $manifest"
-          grep -Ei 'openclash|msd_lite|ddns-go' "$manifest" || {
-            echo "::error::manifest 里没有三插件，构建结果不对"
+          echo "-- 应当存在的包 --"
+          for p in daed luci-app-daede v2ray-geoip v2ray-geosite rtp2httpd luci-app-rtp2httpd ddns-go luci-theme-aurora; do
+            if grep -q "^$p " "$manifest"; then echo "  [OK]  $p"; else echo "::error::$p 不在镜像里"; exit 1; fi
+          done
+          echo "-- 应当缺席的包（出现说明没关掉）--"
+          if grep -E '^(luci-app-openclash|luci-i18n-openclash-zh-cn|nikki|luci-app-nikki|luci-i18n-nikki-zh-cn|mihomo|mihomo-meta|msd_lite|luci-app-msd_lite|udpxy|luci-app-udpxy|lucky|luci-app-lucky|luci-app-daed) ' "$manifest"; then
+            echo "::error::上面这些包不该出现在镜像里"
             exit 1
-          }
+          else
+            echo "  （无，符合预期）"
+          fi
           echo "== 镜像内容体检 =="
           echo "镜像内软件包总数：$(grep -c . "$manifest")"
           echo "-- USB / 风扇 / 无线 / 其它机型 相关包（正常应为空或只有必要项）--"
@@ -159,7 +207,10 @@ jobs:
           mkdir -p release
           cd bin/targets/airoha/an7581
           shopt -s nullglob
-          files=(*xg2010g* *.manifest sha256sums)
+          # 只打包 sysupgrade 镜像 + manifest + sha256sums。
+          # 上游目录里还有 recovery 镜像，本机刷机走的是 U-Boot TFTP/HTTP，
+          # 用不到它，省一半体积。
+          files=(*xg2010g*sysupgrade* *.manifest sha256sums)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::没有生成 xg2010g 产物"
             exit 1

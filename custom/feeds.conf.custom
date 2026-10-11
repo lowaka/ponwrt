@@ -1,0 +1,15 @@
+# ============================================================
+# XG2010G 定制层：额外 feed
+# 由 .github/workflows/xg2010g-build.yml 在 ./scripts/feeds update 之前
+# 追加到 feeds.conf 末尾（feeds.conf.default 之后）。
+
+# 注意：本文件不要出现「裸 # 行」（整行只有一个 #）。OpenWrt 的 scripts/feeds
+# 用 s/#.+$// 剥注释，.+ 要求 # 后至少一个字符，裸 # 行会被判为
+# "Syntax error in feeds.conf, line N"。分隔请用空行，或 # 后面带文字。
+# ============================================================
+
+# kenzok8/openwrt-daede：提供 daed 后端 + dae + luci-app-daede（Web 面板）
+# 上游 pbs05/ponwrt 的 feeds.conf.default 里没有这个 feed，而 daed 的
+# LuCI 面板只在 immortalwrt/luci 之外，所以必须单独引入。
+# 该仓库只有 main 分支。
+src-git daede https://github.com/kenzok8/openwrt-daede.git;main
