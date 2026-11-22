@@ -119,12 +119,12 @@ jobs:
           grep -q '^src-git daede ' feeds.conf || { echo "::error::缺 daede feed"; exit 1; }
 
           ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-          # ── 让 daed/dae 从 daede feed 装，而不是从 packages ──
+          # ── 强制 daed 由 daede feed 提供，而不是 packages ──
           # 2026-11-22：上游 immortalwrt/packages 新增了 net/daed 与 net/dae，
-          # 于是 ./scripts/feeds install -a 选中了 packages 版（日志里是
-          # "Installing package 'daed' from packages"），而 kenzok8 的 daede
-          # 版被当成重复项跳过。问题在于 packages 版带：
+          # 于是 install 选中了 packages 版（日志："Installing package 'daed'
+          # from packages"）。问题在于 packages 版带：
           #     DEPENDS := $(GO_ARCH_DEPENDS) $(BPF_DEPENDS) ...
           # 而 include/bpf.mk 里
           #     BPF_DEPENDS := @HAS_BPF_TOOLCHAIN +@NEED_BPF_TOOLCHAIN
@@ -133,14 +133,23 @@ jobs:
           # 所以该依赖恒不成立 → 包变成「不可见符号」→ kconfig 对不可见符号
           # 根本不写入 .config（连 "# ... is not set" 都没有）→ daed 不编译 →
           # 镜像里没有 daed，Verify 步骤报 "daed 不在镜像里"。
-          # 表现就是 config.fragment 里明明写了 CONFIG_PACKAGE_daed=y，却整行消失。
+          # 表现就是 config.fragment 里写了 CONFIG_PACKAGE_daed=y 却整行消失。
           #
-          # daede feed 的 daed/dae 不依赖 BPF_DEPENDS，且是 luci-app-daede 面板
-          # 默认搭配的后端。这里删掉 packages 里的同名包，install 时只剩一个提供者。
-          rm -rf feeds/packages/net/daed feeds/packages/net/dae
-          echo "== 已移除 packages feed 里的 daed/dae，改由 daede 提供 =="
-
-          ./scripts/feeds install -a
+          # 这里不依赖 feed 排序或 index 内容，直接重建软链：
+          # 先删掉 packages 的 daed/dae（可能是指向已删目录的悬空链接），
+          # 再显式指向 feeds/daede。若 daede 的 Makefile 有问题，会在
+          # make defconfig 阶段直接报错，而不是静默少一个包。
+          rm -rf package/feeds/packages/daed package/feeds/packages/dae
+          for p in daed dae; do
+            if [ -d "feeds/daede/$p" ]; then
+              mkdir -p package/feeds/daede
+              rm -rf "package/feeds/daede/$p"
+              ln -sfn "../../../feeds/daede/$p" "package/feeds/daede/$p"
+              echo "  链接 package/feeds/daede/$p -> ../../../feeds/daede/$p"
+            else
+              echo "::warning::feeds/daede/$p 不存在，无法提供 $p"
+            fi
+          done
           echo "== daed/dae 的实际来源 =="
           readlink -f package/feeds/*/daed 2>/dev/null || echo "  （没有 daed 链接）"
           readlink -f package/feeds/*/dae 2>/dev/null || echo "  （没有 dae 链接）"
