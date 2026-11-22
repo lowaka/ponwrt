@@ -59,6 +59,29 @@ CONFIG_PACKAGE_kmod-xdp-sockets-diag=y
 CONFIG_PACKAGE_kmod-veth=y
 CONFIG_PACKAGE_kmod-inet-diag=y
 
+# ---------- 内核：EIP93 加密引擎（AN7581 硬件 AES）----------
+# AN7581 没有 ARMv8 AES 指令，Go 的 AES-GCM 只能走慢速软件实现
+# （helloworld 的实测基线：VLESS/TLS1.2 AES-256-GCM 只有 34-35 Mbps）。
+# 内核驱动 drivers/crypto/inside-secure/eip93 可把 **AES-CTR** 卸载到 SoC 的
+# EIP93 引擎；注意 GHASH 仍在 CPU 完成，所以这不是原生硬件 GCM。
+#
+# 设备树节点已就绪，无需额外补丁：
+#   target/linux/airoha/dts/an7581.dtsi  crypto@1fb70000
+#       compatible = "inside-secure,safexcel-eip93ies"
+# 6.18 的 eip93_crypto_of_match 明确列出该 compatible
+# （eip93i / eip93ie / eip93is / eip93ies 四种都支持）。
+#
+# 装上后预期：lsmod 有 crypto-hw-eip93，/proc/crypto 里 ctr(aes) 的
+# driver 显示为 eip93。这只是备好内核能力，不改变现有任何行为——
+# 真正的加速需要应用层通过 AF_ALG 使用它：xray-core 有现成的 Go overlay
+# （helloworld 的 190-an7581-eip93-aes-gcm.patch），daed 目前没有。
+#
+# 依赖链自动带入：kmod-crypto-gcm → ctr/ghash/null，以及
+# authenc / des / md5 / sha1 / sha256。crypto-user 提供 AF_ALG 接口，
+# 显式列出便于在 .config 里核对。
+CONFIG_PACKAGE_kmod-crypto-hw-eip93=y
+CONFIG_PACKAGE_kmod-crypto-user=y
+
 # ---------- IPTV：rtp2httpd（组播转单播 + RTSP 回看 + FCC 换台）----------
 # 不用 msd_lite / udpxy：msd_lite 不支持 RTSP，等于没有回看与快速换台。
 CONFIG_PACKAGE_rtp2httpd=y
