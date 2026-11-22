@@ -17,7 +17,19 @@
 #     # CONFIG_KERNEL_BPF_STREAM_PARSER is not set
 # 不修的话 daed 编译能过、运行时会因拿不到 /sys/kernel/btf/vmlinux 而失败。
 # DEBUG_INFO_BTF 与 DEBUG_INFO_REDUCED 二选一，必须先关后者。
-CONFIG_KERNEL_DEBUG_INFO_REDUCED=
+#
+# 【写法要求，2026-11-22 修正】关闭一个 bool 必须写 "# ... is not set"，
+# 不能写 "CONFIG_FOO="。原因在 scripts/kconfig.pl：
+#     第 26 行  /^$PREFIX(.+?)=(.+)/        等号后必须至少 1 个字符
+#     第 31 行  /^# $PREFIX(.+?) is not set/ 关闭项走这条分支，置为 #undef
+# 所以 "CONFIG_FOO=" 两个分支都不匹配，只会在 stderr 留一句
+# "WARNING: can't parse line"，然后**被静默丢弃**——上游的 =y 继续生效。
+# 2026-10-11 的构建就是踩了这个坑：本行原为 "CONFIG_KERNEL_DEBUG_INFO_REDUCED="，
+# 被丢弃后上游 an7581.config 的 =y 存活，于是
+# KERNEL_DEBUG_INFO_BTF 的 "depends on KERNEL_DEBUG_INFO && !KERNEL_DEBUG_INFO_REDUCED"
+# 不成立，符号变为不可见，后面写的 "=y" 也被 kconfig 忽略，最终在断言处失败。
+# config_add() 是「后写覆盖先写」（mod_plus=0 时直接赋值），故本文件能压过上游。
+# CONFIG_KERNEL_DEBUG_INFO_REDUCED is not set
 CONFIG_KERNEL_DEBUG_INFO_BTF=y
 CONFIG_KERNEL_BPF_EVENTS=y
 CONFIG_KERNEL_BPF_STREAM_PARSER=y

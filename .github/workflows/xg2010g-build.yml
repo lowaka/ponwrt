@@ -48,6 +48,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Validate custom config fragments
+        run: |
+          # scripts/kconfig.pl 的解析正则要求等号后至少 1 个字符：
+          #     /^CONFIG_(.+?)=(.+)/          → 命中，取值
+          #     /^# CONFIG_(.+?) is not set/  → 命中，置为 #undef
+          # 因此 "CONFIG_FOO="（空值）两条都不匹配，只会在 stderr 留一句
+          # "WARNING: can't parse line"，然后**被静默丢弃**——上游同名 =y 继续生效。
+          # 2026-10-11 的构建失败就是这个原因（KERNEL_DEBUG_INFO_REDUCED= 被丢弃）。
+          # 关闭一个 bool 必须写成 "# CONFIG_FOO is not set"。
+          bad=0
+          for f in custom/config.fragment custom/config.device custom/config.trim; do
+            [ -f "$f" ] || continue
+            if grep -nE '^CONFIG_[A-Za-z0-9_]+=$' "$f"; then
+              echo "::error file=$f::上面是空值赋值，kconfig.pl 会静默丢弃；关闭 bool 请改写成 '# CONFIG_X is not set'"
+              bad=1
+            fi
+          done
+          [ "$bad" = "0" ] || exit 1
+          echo "== custom 配置片段行数 =="
+          wc -l custom/config.fragment custom/config.device custom/config.trim
+
       - name: Free build space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -153,12 +174,15 @@ jobs:
           echo "== daed 的 kmod 依赖 =="
           grep -E 'CONFIG_PACKAGE_kmod-(sched-core|sched-bpf|xdp-sockets-diag|veth|inet-diag)=' .config | sort || true
           echo "== daed 的内核前提（缺一不可）=="
-          for sym in CONFIG_KERNEL_DEBUG_INFO_BTF CONFIG_KERNEL_BPF_EVENTS CONFIG_KERNEL_BPF_STREAM_PARSER; do
-            if grep -q "^$sym=y$" .config; then echo "  [OK]  $sym=y"; else echo "::error::$sym 不是 =y，daed 运行时会拿不到 /sys/kernel/btf/vmlinux"; exit 1; fi
+          grep -E '^CONFIG_KERNEL_(DEBUG_INFO|DEBUG_INFO_REDUCED|DEBUG_INFO_NONE|DEBUG_INFO_BTF|DEBUG_INFO_BTF_MODULES|BPF_EVENTS|BPF_STREAM_PARSER|CGROUP_BPF|KPROBES)(=| is not set)' .config | sort || true
+          for sym in CONFIG_KERNEL_DEBUG_INFO CONFIG_KERNEL_DEBUG_INFO_BTF CONFIG_KERNEL_BPF_EVENTS CONFIG_KERNEL_BPF_STREAM_PARSER; do
+            if grep -q "^$sym=y$" .config; then echo "  [OK]  $sym=y"; else echo "::error::$sym 不是 =y，daed 运行时拿不到 /sys/kernel/btf/vmlinux 就做不了 CO-RE 重定位"; exit 1; fi
           done
           if grep -q '^CONFIG_KERNEL_DEBUG_INFO_REDUCED=y$' .config; then
-            echo "::error::DEBUG_INFO_REDUCED 与 DEBUG_INFO_BTF 互斥，仍为 =y"; exit 1
+            echo "::error::DEBUG_INFO_REDUCED 与 DEBUG_INFO_BTF 互斥，仍为 =y —— 检查 custom/config.fragment 是否误用了 'CONFIG_X=' 空值写法"; exit 1
           fi
+          echo "::notice::内核已开启完整 DEBUG_INFO（BTF 的硬性依赖，无法与 DEBUG_INFO_REDUCED 并存），编译耗时与中间产物体积会明显高于开启 REDUCED 时"
+          df -h / | tail -1
           echo "== BPF 工具链（应为宿主机 LLVM，避免从源码编 LLVM）=="
           grep -E '^CONFIG_(DEVEL|BPF_TOOLCHAIN_HOST|BPF_TOOLCHAIN_BUILD_LLVM|BPF_TOOLCHAIN_NONE|USE_LLVM_HOST)=' .config | sort || true
           echo "== 精简项检查（若仍为 =y 说明被依赖自动选回，会给出警告）=="
