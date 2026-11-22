@@ -202,6 +202,19 @@ jobs:
           [ "$n" = "1" ] || { echo "::error::机型数量不是 1（实际 $n），机型收敛失败"; grep -n 'TARGET_DEVICE_airoha' .config | head -20; exit 1; }
           echo "== 透明代理 / IPTV / DDNS 在 .config 里的状态 =="
           grep -E 'CONFIG_PACKAGE_(luci-app-daede|daed|v2ray-geoip|v2ray-geosite|luci-app-rtp2httpd|rtp2httpd|ddns-go|luci-app-ddns-go|luci-theme-aurora|luci-app-openclash|luci-app-nikki|nikki|mihomo-meta|lucky|luci-app-lucky|msd_lite)(=| is not set)' .config | sort || true
+          # daed 必须真的写进 .config。2026-11-22 曾因 packages feed 的
+          # BPF_DEPENDS 引用未定义符号，使 daed 成为不可见符号、整行消失，
+          # 而问题直到 2 小时后的 Verify 才暴露。这里前置断言，7 分钟内失败。
+          grep -q '^CONFIG_PACKAGE_daed=y$' .config || {
+            echo "::error::CONFIG_PACKAGE_daed 不在 .config —— 检查 daed 的 feed 来源（应为 daede，而非 packages）"
+            readlink -f package/feeds/*/daed 2>/dev/null || true
+            exit 1
+          }
+          grep -q '^CONFIG_PACKAGE_luci-app-daede=y$' .config || {
+            echo "::error::CONFIG_PACKAGE_luci-app-daede 不在 .config"
+            exit 1
+          }
+          echo "  [OK] daed / luci-app-daede 均已进入 .config"
           echo "== daed 后端选择（应为 _daed=y, _dae 未设）=="
           grep -E 'CONFIG_PACKAGE_luci-app-daede_(daed|dae)(=| is not set)' .config || true
           echo "== daed 的 kmod 依赖 =="
